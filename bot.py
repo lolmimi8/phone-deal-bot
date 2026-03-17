@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 # ═══════════════════════════════════════════════════════════════
 #  KONFIGURACJA
 # ═══════════════════════════════════════════════════════════════
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "WSTAW_SWOJ_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1483519597867958293/xJz8iUw4im81cPHBdiKbAM-F4zcbqpiQnoTLD4soNsdFVkET9PDltRpVOD2ZshtMQlXz")
 CHECK_INTERVAL     = 120   # sekundy (co 2 minuty)
 MAX_PRICE          = 2000  # PLN – górny limit ceny ogłoszenia
 DISCOUNT_THRESHOLD = 10    # % – bot wysyła tylko gdy cena jest >= X% niżej od referencyjnej
