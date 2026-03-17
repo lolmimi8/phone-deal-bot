@@ -63,6 +63,24 @@ SEARCH_QUERIES = [
     "galaxy s23", "galaxy s24", "galaxy s25",
 ]
 
+# ── Słowa które MUSZĄ być w tytule żeby uznać za telefon ──────
+PHONE_KEYWORDS = [
+    "iphone", "samsung", "galaxy", "smartfon", "smartphone",
+    "telefon", "s23", "s24", "s25",
+]
+
+# ── Słowa które od razu dyskwalifikują ogłoszenie ─────────────
+ACCESSORY_KEYWORDS = [
+    "etui", "case", "pokrowiec", "obudowa", "szklo", "szkło",
+    "folia", "uchwyt", "ladowarka", "ładowarka", "kabel", "cable",
+    "sluchawki", "słuchawki", "earphones", "airpods", "powerbank",
+    "bateria", "battery", "adapter", "hub", "stojak", "stand",
+    "tempered glass", "screen protector", "panzer", "spigen",
+    "atrapa", "dummy", "naklejka", "sticker", "torba", "torbica",
+    "huse", "husă", "maska", "kryt", "kepernyo", "képernyő",
+    "hoops", "pathfinder", "clear case", "plecki", "back cover",
+]
+
 DAMAGE_KEYWORDS = [
     "uszkodzon", "rozbity", "peknieto", "zbity", "nie dziala",
     "nie wlacza", "nie laduje", "awari", "do naprawy", "na czesci",
@@ -85,6 +103,20 @@ def save_seen(seen):
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen), f)
 
+# ═══════════════════════════════════════════════════════════════
+#  FILTR – czy to telefon a nie akcesorium
+# ═══════════════════════════════════════════════════════════════
+def is_phone(title):
+    t = title.lower()
+    # odrzuc jesli zawiera slowo akcesorium
+    for kw in ACCESSORY_KEYWORDS:
+        if kw in t:
+            return False
+    # musi zawierac conajmniej jedno slowo z listy telefonow
+    for kw in PHONE_KEYWORDS:
+        if kw in t:
+            return True
+    return False
 
 # ═══════════════════════════════════════════════════════════════
 #  SCRAPER OLX
@@ -131,7 +163,7 @@ def scrape_olx(query):
                     or bool(card.select_one("[data-testid='delivery-badge']"))
                     or bool(card.select_one("[data-cy='olx-delivery']"))
                 )
-                if price and price <= MAX_PRICE:
+                if price and price <= MAX_PRICE and is_phone(title):
                     results.append({
                         "id": link, "platform": "OLX",
                         "title": title, "price": price, "price_raw": price_raw,
@@ -140,19 +172,21 @@ def scrape_olx(query):
                     })
             except Exception:
                 continue
+        print(f"[OLX] '{query}': znaleziono {len(results)} telefonow", flush=True)
     except Exception as e:
         print(f"[OLX] Blad przy '{query}': {e}", flush=True)
     return results
 
 # ═══════════════════════════════════════════════════════════════
 #  SCRAPER VINTED
+#  catalog_ids=2640 = kategoria Telefony na Vinted PL
 # ═══════════════════════════════════════════════════════════════
 def scrape_vinted(query):
     results = []
     url = (
         f"https://www.vinted.pl/api/v2/catalog/items"
         f"?search_text={requests.utils.quote(query)}"
-        f"&price_to={MAX_PRICE}&catalog_ids=1&per_page=30&order=newest_first"
+        f"&price_to={MAX_PRICE}&catalog_ids=2640&per_page=30&order=newest_first"
     )
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -173,24 +207,32 @@ def scrape_vinted(query):
             print(f"[Vinted] Brak odpowiedzi dla '{query}' (status {r.status_code})", flush=True)
             return results
         data = r.json()
+        found = 0
         for item in data.get("items", []):
             try:
                 price = float(item.get("price", {}).get("amount", 9999))
                 if price > MAX_PRICE:
                     continue
-                item_id     = str(item.get("id"))
                 title       = item.get("title", "")
+                if not is_phone(title):
+                    continue
+                item_id     = str(item.get("id"))
                 description = item.get("description", "").lower()
                 link        = f"https://www.vinted.pl/items/{item_id}"
                 image       = item.get("photo", {}).get("url", "")
+                # Próbuj wyciągnąć GB z opisu Vinted (pole capacity lub description)
+                capacity    = item.get("extra_attributes", {})
+                desc_full   = title + " " + description + " " + str(capacity)
                 results.append({
                     "id": f"vinted_{item_id}", "platform": "Vinted",
                     "title": title, "price": price, "price_raw": f"{price:.0f} zl",
                     "link": link, "image": image,
-                    "has_shipping": True, "description": description,
+                    "has_shipping": True, "description": desc_full.lower(),
                 })
+                found += 1
             except Exception:
                 continue
+        print(f"[Vinted] '{query}': znaleziono {found} telefonow", flush=True)
     except Exception as e:
         print(f"[Vinted] Blad przy '{query}': {e}", flush=True)
     return results
@@ -204,12 +246,18 @@ def parse_price(text):
 
 def extract_storage_gb(text):
     t = text.lower()
+    # 1TB / 2TB
     tb = re.search(r'(\d+)\s*tb', t)
     if tb:
         return int(tb.group(1)) * 1024
-    gb = re.search(r'(\d+)\s*gb', t)
+    # 128gb / 256 gb / 512GB
+    gb = re.search(r'\b(64|128|256|512)\s*gb\b', t)
     if gb:
         return int(gb.group(1))
+    # samo 128 / 256 / 512 bez jednostki (typowe na Vinted)
+    standalone = re.search(r'\b(128|256|512)\b', t)
+    if standalone:
+        return int(standalone.group(1))
     return None
 
 def get_ref_price(title, description=""):
@@ -226,6 +274,7 @@ def get_ref_price(title, description=""):
     detected_gb = extract_storage_gb(haystack)
     if detected_gb and detected_gb in variants:
         return variants[detected_gb], detected_gb, best_key
+    # fallback – najnizsza dostepna wersja
     fallback_gb = min(variants.keys())
     return variants[fallback_gb], detected_gb, best_key
 
@@ -244,7 +293,7 @@ def is_damaged(item):
     return any(kw in haystack for kw in DAMAGE_KEYWORDS)
 
 # ═══════════════════════════════════════════════════════════════
-#  WYSYLKA NA DISCORD
+#  WYSYLKA NA DISCORD (z opoznieniem anti-429)
 # ═══════════════════════════════════════════════════════════════
 def send_discord(item, ref_price, storage_gb, model_key):
     pct     = discount_pct(item["price"], ref_price) if ref_price else None
@@ -296,12 +345,56 @@ def send_discord(item, ref_price, storage_gb, model_key):
         embed["thumbnail"] = {"url": item["image"]}
 
     payload = {"username": "PhoneDealBot", "embeds": [embed]}
-    try:
-        r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        if r.status_code not in (200, 204):
-            print(f"[Discord] Blad: {r.status_code}", flush=True)
-    except Exception as e:
-        print(f"[Discord] Wyjatek: {e}", flush=True)
+    for attempt in range(3):
+        try:
+            r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+            if r.status_code == 429:
+                retry_after = r.json().get("retry_after", 2)
+                print(f"[Discord] Rate limit, czekam {retry_after}s...", flush=True)
+                time.sleep(float(retry_after) + 0.5)
+                continue
+            if r.status_code not in (200, 204):
+                print(f"[Discord] Blad: {r.status_code}", flush=True)
+            break
+        except Exception as e:
+            print(f"[Discord] Wyjatek: {e}", flush=True)
+            break
+    time.sleep(1.5)  # minimalny odstep miedzy wiadomosciami
+
+# ═══════════════════════════════════════════════════════════════
+#  WSPOLNA LOGIKA PRZETWARZANIA OFERT
+# ═══════════════════════════════════════════════════════════════
+def process_items(items, seen, send=True):
+    deal_count = 0
+    skip_count = 0
+    for item in items:
+        if item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        ref_price, storage_gb, model_key = get_ref_price(
+            item["title"], item.get("description", "")
+        )
+        is_deal = not (ref_price and item["price"] >= ref_price * (1 - DISCOUNT_THRESHOLD / 100))
+        if is_deal:
+            if send:
+                print(f"OKAZJA: {item['title']} | {item['price_raw']} | {gb_label(storage_gb)} | {item['platform']}", flush=True)
+                send_discord(item, ref_price, storage_gb, model_key)
+            deal_count += 1
+        else:
+            skip_count += 1
+    return deal_count, skip_count
+
+# ═══════════════════════════════════════════════════════════════
+#  ZBIERANIE WSZYSTKICH OFERT
+# ═══════════════════════════════════════════════════════════════
+def fetch_all():
+    all_items = []
+    for query in SEARCH_QUERIES:
+        all_items.extend(scrape_olx(query))
+        time.sleep(1)
+        all_items.extend(scrape_vinted(query))
+        time.sleep(1)
+    return all_items
 
 # ═══════════════════════════════════════════════════════════════
 #  GLOWNA PETLA
@@ -310,71 +403,24 @@ def main():
     print("PhoneDealBot uruchomiony!", flush=True)
     print(f"Co {CHECK_INTERVAL // 60} min | Max: {MAX_PRICE} zl | Prog: -{DISCOUNT_THRESHOLD}%", flush=True)
 
-    seen        = load_seen()
-    first_run   = len(seen) == 0
+    seen      = load_seen()
+    first_run = len(seen) == 0
 
     if first_run:
-        print("Pierwsze uruchomienie – szukam okazji i zapisuje reszte jako widziane...", flush=True)
-        startup_items = []
-        for query in SEARCH_QUERIES:
-            startup_items.extend(scrape_olx(query))
-            startup_items.extend(scrape_vinted(query))
-            time.sleep(1)
-
-        deal_count = 0
-        skip_count = 0
-        for item in startup_items:
-            if item["id"] in seen:
-                continue
-            seen.add(item["id"])
-
-            ref_price, storage_gb, model_key = get_ref_price(
-                item["title"], item.get("description", "")
-            )
-
-            # Jesli okazja – wyslij na Discord
-            if not (ref_price and item["price"] >= ref_price * (1 - DISCOUNT_THRESHOLD / 100)):
-                print(f"OKAZJA (start): {item['title']} | {item['price_raw']} | {gb_label(storage_gb)} | {item['platform']}", flush=True)
-                send_discord(item, ref_price, storage_gb, model_key)
-                deal_count += 1
-                time.sleep(0.5)
-            else:
-                skip_count += 1
-
+        print("Pierwsze uruchomienie – szukam okazji i zapisuje reszte...", flush=True)
+        items = fetch_all()
+        deal_count, skip_count = process_items(items, seen, send=True)
         save_seen(seen)
-        print(f"Start: wyslano {deal_count} okazji, pominieto {skip_count} zwyklych ogloszen.", flush=True)
+        print(f"Start: wyslano {deal_count} okazji, pominieto {skip_count} zwyklych.", flush=True)
         print(f"Nastepne sprawdzenie za {CHECK_INTERVAL // 60} min...", flush=True)
         time.sleep(CHECK_INTERVAL)
 
     while True:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Sprawdzam nowe ogloszenia...", flush=True)
-        all_items = []
-
-        for query in SEARCH_QUERIES:
-            all_items.extend(scrape_olx(query))
-            all_items.extend(scrape_vinted(query))
-            time.sleep(1)
-
-        new_count = 0
-        for item in all_items:
-            if item["id"] in seen:
-                continue
-            seen.add(item["id"])
-
-            ref_price, storage_gb, model_key = get_ref_price(
-                item["title"], item.get("description", "")
-            )
-
-            if ref_price and item["price"] >= ref_price * (1 - DISCOUNT_THRESHOLD / 100):
-                continue
-
-            print(f"OKAZJA: {item['title']} | {item['price_raw']} | {gb_label(storage_gb)} | {item['platform']}", flush=True)
-            send_discord(item, ref_price, storage_gb, model_key)
-            new_count += 1
-            time.sleep(0.5)
-
+        items = fetch_all()
+        deal_count, _ = process_items(items, seen, send=True)
         save_seen(seen)
-        print(f"Nowych okazji: {new_count}", flush=True)
+        print(f"Nowych okazji: {deal_count}", flush=True)
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
