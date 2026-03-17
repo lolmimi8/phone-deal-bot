@@ -16,7 +16,7 @@ sys.stdout.reconfigure(line_buffering=True)
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 CHECK_INTERVAL     = 120
 MAX_PRICE          = 2000
-DISCOUNT_THRESHOLD = -80
+DISCOUNT_THRESHOLD = 0
 
 MY_PRICES = {
     "samsung s23":        {128: 650,  256: 780},
