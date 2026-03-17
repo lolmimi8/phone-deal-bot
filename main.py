@@ -1,6 +1,5 @@
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-from bot import main
 
 class PingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -11,11 +10,17 @@ class PingHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-# Bot działa w osobnym wątku
-bot_thread = threading.Thread(target=main, daemon=True)
+# Serwer HTTP startuje PIERWSZY w głównym wątku tymczasowo
+server = HTTPServer(("0.0.0.0", 8080), PingHandler)
+print("[HTTP] Serwer nasluchuje na porcie 8080", flush=True)
+
+# Bot startuje w osobnym wątku PO uruchomieniu serwera
+def start_bot():
+    from bot import main
+    main()
+
+bot_thread = threading.Thread(target=start_bot, daemon=True)
 bot_thread.start()
 
-# Serwer HTTP działa w głównym wątku (wymagane przez Back4app)
-server = HTTPServer(("0.0.0.0", 8080), PingHandler)
-print("[HTTP] Serwer nasluchuje na porcie 8080")
+# Serwer blokuje główny wątek – działa cały czas
 server.serve_forever()
