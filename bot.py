@@ -7,7 +7,6 @@ import re
 from datetime import datetime
 from bs4 import BeautifulSoup
 
-# Wymuszamy natychmiastowe logowanie (wymagane przez Back4app)
 os.environ["PYTHONUNBUFFERED"] = "1"
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -86,6 +85,7 @@ def save_seen(seen):
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen), f)
 
+
 # ═══════════════════════════════════════════════════════════════
 #  SCRAPER OLX
 # ═══════════════════════════════════════════════════════════════
@@ -154,11 +154,24 @@ def scrape_vinted(query):
         f"?search_text={requests.utils.quote(query)}"
         f"&price_to={MAX_PRICE}&catalog_ids=1&per_page=30&order=newest_first"
     )
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "pl-PL,pl;q=0.9",
+        "Referer": "https://www.vinted.pl/",
+        "Origin": "https://www.vinted.pl",
+    }
     try:
         session = requests.Session()
-        session.get("https://www.vinted.pl", headers=headers, timeout=10)
+        session.get(
+            "https://www.vinted.pl/catalog?search_text=" + requests.utils.quote(query),
+            headers=headers, timeout=15
+        )
+        time.sleep(2)
         r = session.get(url, headers=headers, timeout=15)
+        if r.status_code != 200 or not r.text.strip():
+            print(f"[Vinted] Brak odpowiedzi dla '{query}' (status {r.status_code})", flush=True)
+            return results
         data = r.json()
         for item in data.get("items", []):
             try:
@@ -270,12 +283,12 @@ def send_discord(item, ref_price, storage_gb, model_key):
         "color":       color,
         "description": "\n".join(desc_parts),
         "fields": [
-            {"name": "Cena ogloszenia",         "value": item["price_raw"],        "inline": True},
-            {"name": "Cena referencyjna",        "value": ref_text,                 "inline": True},
-            {"name": "Platforma",                "value": item["platform"],         "inline": True},
-            {"name": "Wykryty model",            "value": model_key.title() if model_key else "nieznany", "inline": True},
-            {"name": "Wykryta pamiec",           "value": gb_label(storage_gb),     "inline": True},
-            {"name": "Wysylka OLX",              "value": shipping_text,            "inline": False},
+            {"name": "Cena ogloszenia",         "value": item["price_raw"],                                "inline": True},
+            {"name": "Cena referencyjna",        "value": ref_text,                                        "inline": True},
+            {"name": "Platforma",                "value": item["platform"],                                "inline": True},
+            {"name": "Wykryty model",            "value": model_key.title() if model_key else "nieznany",  "inline": True},
+            {"name": "Wykryta pamiec",           "value": gb_label(storage_gb),                            "inline": True},
+            {"name": "Wysylka OLX",              "value": shipping_text,                                   "inline": False},
         ],
         "footer": {"text": f"PhoneDealBot  {datetime.now().strftime('%H:%M  %d.%m.%Y')}"},
     }
@@ -296,10 +309,45 @@ def send_discord(item, ref_price, storage_gb, model_key):
 def main():
     print("PhoneDealBot uruchomiony!", flush=True)
     print(f"Co {CHECK_INTERVAL // 60} min | Max: {MAX_PRICE} zl | Prog: -{DISCOUNT_THRESHOLD}%", flush=True)
-    seen = load_seen()
+
+    seen        = load_seen()
+    first_run   = len(seen) == 0
+
+    if first_run:
+        print("Pierwsze uruchomienie – szukam okazji i zapisuje reszte jako widziane...", flush=True)
+        startup_items = []
+        for query in SEARCH_QUERIES:
+            startup_items.extend(scrape_olx(query))
+            startup_items.extend(scrape_vinted(query))
+            time.sleep(1)
+
+        deal_count = 0
+        skip_count = 0
+        for item in startup_items:
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+
+            ref_price, storage_gb, model_key = get_ref_price(
+                item["title"], item.get("description", "")
+            )
+
+            # Jesli okazja – wyslij na Discord
+            if not (ref_price and item["price"] >= ref_price * (1 - DISCOUNT_THRESHOLD / 100)):
+                print(f"OKAZJA (start): {item['title']} | {item['price_raw']} | {gb_label(storage_gb)} | {item['platform']}", flush=True)
+                send_discord(item, ref_price, storage_gb, model_key)
+                deal_count += 1
+                time.sleep(0.5)
+            else:
+                skip_count += 1
+
+        save_seen(seen)
+        print(f"Start: wyslano {deal_count} okazji, pominieto {skip_count} zwyklych ogloszen.", flush=True)
+        print(f"Nastepne sprawdzenie za {CHECK_INTERVAL // 60} min...", flush=True)
+        time.sleep(CHECK_INTERVAL)
 
     while True:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Sprawdzam ogloszenia...", flush=True)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Sprawdzam nowe ogloszenia...", flush=True)
         all_items = []
 
         for query in SEARCH_QUERIES:
