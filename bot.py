@@ -10,12 +10,10 @@ from bs4 import BeautifulSoup
 os.environ["PYTHONUNBUFFERED"] = "1"
 sys.stdout.reconfigure(line_buffering=True)
 
-# ═══════════════════════════════════════════════════════════════
-#  KONFIGURACJA
-# ═══════════════════════════════════════════════════════════════
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 CHECK_INTERVAL     = 120
 MAX_PRICE          = 2000
+MIN_PRICE          = 100   # minimalna cena – odrzuca akcesoria za grosze
 DISCOUNT_THRESHOLD = 0
 
 MY_PRICES = {
@@ -63,12 +61,18 @@ SEARCH_QUERIES = [
     "galaxy s23", "galaxy s24", "galaxy s25",
 ]
 
+# Jeśli ANY z tych słów jest w tytule → odrzuć
 ACCESSORY_KEYWORDS = [
-    "etui", " case", "pokrowiec", "szklo", "szkło", "folia",
-    "uchwyt", "ladowarka", "ładowarka", "kabel", "sluchawki",
-    "słuchawki", "powerbank", "adapter", "atrapa", "naklejka",
-    "tempered glass", "screen protector", "hoops", "huse", "husă",
-    "torbica", "maska", "kryt", "stojak", "plecki",
+    "etui", "case", "pokrowiec", "szklo", "szkło", "folia",
+    "uchwyt", "ladowarka", "ładowarka", "kabel", "cable",
+    "sluchawki", "słuchawki", "earphones", "airpods",
+    "powerbank", "adapter", "atrapa", "naklejka", "sticker",
+    "tempered glass", "screen protector", "panzer", "spigen",
+    "hoops", "huse", "husă", "husă", "maska", "kryt",
+    "torbica", "stojak", "plecki", "back cover", "silikonow",
+    "silikonowe", "przezroczyst", "ochronn", "obudow",
+    "szkiełko", "szkielko", "hartowane", "ochronne szklo",
+    "smartwatch", "zegarek", "watch",
 ]
 
 DAMAGE_KEYWORDS = [
@@ -78,9 +82,6 @@ DAMAGE_KEYWORDS = [
     "damaged", "broken", "cracked", "faulty",
 ]
 
-# ═══════════════════════════════════════════════════════════════
-#  PAMIEC WIDZIANYCH OGLOSZEN
-# ═══════════════════════════════════════════════════════════════
 SEEN_FILE = "seen_listings.json"
 
 def load_seen():
@@ -93,30 +94,23 @@ def save_seen(seen):
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen), f)
 
-# ═══════════════════════════════════════════════════════════════
-#  FILTR – odrzuca akcesoria, przepuszcza telefony
-#  Działa na tytule LOWERCASE
-# ═══════════════════════════════════════════════════════════════
 def is_phone(title_lower):
-    # odrzuc akcesoria
+    # 1. Odrzuć jeśli zawiera słowo akcesorium
     for kw in ACCESSORY_KEYWORDS:
         if kw in title_lower:
             return False
-    # musi zawierac przynajmniej jeden klucz modelu
-    # klucze sa juz lowercase wiec porownanie bezposrednie
+    # 2. Musi zawierać przynajmniej jeden klucz modelu z tabeli cen
     for key in MY_PRICES:
         if key in title_lower:
             return True
     return False
 
-# ═══════════════════════════════════════════════════════════════
-#  SCRAPER OLX
-# ═══════════════════════════════════════════════════════════════
 def scrape_olx(query):
     results = []
     url = (
         f"https://www.olx.pl/elektronika/telefony/smartfony/"
         f"?search%5Bfilter_float_price%3Ato%5D={MAX_PRICE}"
+        f"&search%5Bfilter_float_price%3Afrom%5D={MIN_PRICE}"
         f"&search%5Bfilter_refiners%5D=spell_checker"
         f"&search%5Bq%5D={requests.utils.quote(query)}"
     )
@@ -140,15 +134,15 @@ def scrape_olx(query):
                 img_el   = card.select_one("img")
                 if not (title_el and price_el and link_el):
                     continue
-                title      = title_el.text.strip()
-                title_low  = title.lower()  # LOWERCASE do porownania
-                price_raw  = price_el.text.strip()
-                price      = parse_price(price_raw)
-                link       = link_el.get("href", "")
+                title     = title_el.text.strip()
+                title_low = title.lower()
+                price_raw = price_el.text.strip()
+                price     = parse_price(price_raw)
+                link      = link_el.get("href", "")
                 if not link.startswith("http"):
                     link = "https://www.olx.pl" + link
-                image      = img_el.get("src", "") if img_el else ""
-                card_text  = card.get_text(" ", strip=True).lower()
+                image     = img_el.get("src", "") if img_el else ""
+                card_text = card.get_text(" ", strip=True).lower()
                 has_shipping = (
                     "wysylka olx" in card_text
                     or "dostawa olx" in card_text
@@ -156,7 +150,7 @@ def scrape_olx(query):
                     or bool(card.select_one("[data-testid='delivery-badge']"))
                     or bool(card.select_one("[data-cy='olx-delivery']"))
                 )
-                if price and price <= MAX_PRICE and is_phone(title_low):
+                if price and MIN_PRICE <= price <= MAX_PRICE and is_phone(title_low):
                     results.append({
                         "id": link, "platform": "OLX",
                         "title": title, "price": price, "price_raw": price_raw,
@@ -170,17 +164,13 @@ def scrape_olx(query):
         print(f"[OLX] Blad przy '{query}': {e}", flush=True)
     return results
 
-# ═══════════════════════════════════════════════════════════════
-#  SCRAPER VINTED
-#  Próbujemy kilka catalog_ids dla telefonów
-# ═══════════════════════════════════════════════════════════════
 def scrape_vinted(query):
     results = []
-    # Próbujemy bez catalog_ids (wszystkie kategorie) żeby nie blokować wyników
     url = (
         f"https://www.vinted.pl/api/v2/catalog/items"
         f"?search_text={requests.utils.quote(query)}"
-        f"&price_to={MAX_PRICE}&per_page=30&order=newest_first"
+        f"&price_from={MIN_PRICE}&price_to={MAX_PRICE}"
+        f"&per_page=30&order=newest_first"
     )
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -206,7 +196,7 @@ def scrape_vinted(query):
         for item in data.get("items", []):
             try:
                 price = float(item.get("price", {}).get("amount", 9999))
-                if price > MAX_PRICE:
+                if not (MIN_PRICE <= price <= MAX_PRICE):
                     continue
                 title      = item.get("title", "")
                 title_low  = title.lower()
@@ -216,12 +206,11 @@ def scrape_vinted(query):
                 description = item.get("description", "").lower()
                 link        = f"https://www.vinted.pl/items/{item_id}"
                 image       = item.get("photo", {}).get("url", "")
-                desc_full   = (title_low + " " + description)
                 results.append({
                     "id": f"vinted_{item_id}", "platform": "Vinted",
                     "title": title, "price": price, "price_raw": f"{price:.0f} zl",
                     "link": link, "image": image,
-                    "has_shipping": True, "description": desc_full,
+                    "has_shipping": True, "description": (title_low + " " + description),
                 })
             except Exception:
                 continue
@@ -230,9 +219,6 @@ def scrape_vinted(query):
         print(f"[Vinted] Blad przy '{query}': {e}", flush=True)
     return results
 
-# ═══════════════════════════════════════════════════════════════
-#  HELPERY
-# ═══════════════════════════════════════════════════════════════
 def parse_price(text):
     digits = re.sub(r"[^\d]", "", text)
     return float(digits) if digits else None
@@ -281,13 +267,9 @@ def is_damaged(item):
     haystack = (item["title"] + " " + item.get("description", "")).lower()
     return any(kw in haystack for kw in DAMAGE_KEYWORDS)
 
-# ═══════════════════════════════════════════════════════════════
-#  WYSYLKA NA DISCORD
-# ═══════════════════════════════════════════════════════════════
 def send_discord(item, ref_price, storage_gb, model_key):
     pct     = discount_pct(item["price"], ref_price) if ref_price else None
     damaged = is_damaged(item)
-
     if damaged:
         color = 0x808080
     elif pct and pct >= 30:
@@ -296,25 +278,21 @@ def send_discord(item, ref_price, storage_gb, model_key):
         color = 0xFFD700
     else:
         color = 0x00CC66
-
     if item["platform"] == "OLX":
         shipping_text = "TAK - Wysylka OLX" if item.get("has_shipping") else "NIE - tylko odbior osobisty"
     else:
         shipping_text = "TAK (Vinted)"
-
     if ref_price:
         ref_text      = f"{ref_price} zl ({gb_label(storage_gb)})"
         discount_text = f"-{pct}% taniej niz cena referencyjna!" if pct else ""
     else:
         ref_text      = "brak danych dla tego modelu/pamieci"
         discount_text = ""
-
     damage_text = "UWAGA: moze byc uszkodzony!" if damaged else "Brak oznak uszkodzenia"
     desc_parts  = []
     if discount_text:
         desc_parts.append(f"OKAZJA {discount_text}")
     desc_parts.append(damage_text)
-
     embed = {
         "title":       f"Nowe ogloszenie: {item['title']}",
         "url":         item["link"],
@@ -332,7 +310,6 @@ def send_discord(item, ref_price, storage_gb, model_key):
     }
     if item.get("image"):
         embed["thumbnail"] = {"url": item["image"]}
-
     payload = {"username": "PhoneDealBot", "embeds": [embed]}
     for attempt in range(3):
         try:
@@ -350,9 +327,6 @@ def send_discord(item, ref_price, storage_gb, model_key):
             break
     time.sleep(1.5)
 
-# ═══════════════════════════════════════════════════════════════
-#  WSPOLNA LOGIKA PRZETWARZANIA
-# ═══════════════════════════════════════════════════════════════
 def process_items(items, seen, send=True):
     deal_count = 0
     skip_count = 0
@@ -382,12 +356,9 @@ def fetch_all():
         time.sleep(1)
     return all_items
 
-# ═══════════════════════════════════════════════════════════════
-#  GLOWNA PETLA
-# ═══════════════════════════════════════════════════════════════
 def main():
     print("PhoneDealBot uruchomiony!", flush=True)
-    print(f"Co {CHECK_INTERVAL // 60} min | Max: {MAX_PRICE} zl | Prog: {DISCOUNT_THRESHOLD}%", flush=True)
+    print(f"Co {CHECK_INTERVAL // 60} min | Min: {MIN_PRICE} zl | Max: {MAX_PRICE} zl | Prog: {DISCOUNT_THRESHOLD}%", flush=True)
 
     seen      = load_seen()
     first_run = len(seen) == 0
