@@ -63,22 +63,12 @@ SEARCH_QUERIES = [
     "galaxy s23", "galaxy s24", "galaxy s25",
 ]
 
-# ── Słowa które MUSZĄ być w tytule żeby uznać za telefon ──────
-PHONE_KEYWORDS = [
-    "iphone", "samsung", "galaxy", "smartfon", "smartphone",
-    "telefon", "s23", "s24", "s25",
-]
-
-# ── Słowa które od razu dyskwalifikują ogłoszenie ─────────────
+# Słowa które na pewno oznaczają akcesorium a nie telefon
 ACCESSORY_KEYWORDS = [
-    "etui", "case", "pokrowiec", "obudowa", "szklo", "szkło",
-    "folia", "uchwyt", "ladowarka", "ładowarka", "kabel", "cable",
-    "sluchawki", "słuchawki", "earphones", "airpods", "powerbank",
-    "bateria", "battery", "adapter", "hub", "stojak", "stand",
-    "tempered glass", "screen protector", "panzer", "spigen",
-    "atrapa", "dummy", "naklejka", "sticker", "torba", "torbica",
-    "huse", "husă", "maska", "kryt", "kepernyo", "képernyő",
-    "hoops", "pathfinder", "clear case", "plecki", "back cover",
+    "etui", "case", "pokrowiec", "szklo", "szkło", "folia",
+    "uchwyt", "ladowarka", "ładowarka", "kabel", "sluchawki",
+    "słuchawki", "powerbank", "adapter", "atrapa", "naklejka",
+    "tempered glass", "screen protector", "hoops", "huse", "husă",
 ]
 
 DAMAGE_KEYWORDS = [
@@ -105,16 +95,17 @@ def save_seen(seen):
 
 # ═══════════════════════════════════════════════════════════════
 #  FILTR – czy to telefon a nie akcesorium
+#  Sprawdza tylko czy tytul NIE zawiera slow akcesoriow
+#  oraz czy zawiera nazwę modelu z naszej tabeli
 # ═══════════════════════════════════════════════════════════════
 def is_phone(title):
     t = title.lower()
-    # odrzuc jesli zawiera slowo akcesorium
     for kw in ACCESSORY_KEYWORDS:
         if kw in t:
             return False
-    # musi zawierac conajmniej jedno slowo z listy telefonow
-    for kw in PHONE_KEYWORDS:
-        if kw in t:
+    # musi zawierac chociaz jeden klucz z tabeli cen
+    for key in MY_PRICES:
+        if key in t:
             return True
     return False
 
@@ -140,6 +131,7 @@ def scrape_olx(query):
         r = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
         cards = soup.select("div[data-cy='l-card']")
+        print(f"[OLX] '{query}': kart={len(cards)}", flush=True)
         for card in cards:
             try:
                 title_el = card.select_one("h6")
@@ -172,14 +164,13 @@ def scrape_olx(query):
                     })
             except Exception:
                 continue
-        print(f"[OLX] '{query}': znaleziono {len(results)} telefonow", flush=True)
+        print(f"[OLX] '{query}': telefonow={len(results)}", flush=True)
     except Exception as e:
         print(f"[OLX] Blad przy '{query}': {e}", flush=True)
     return results
 
 # ═══════════════════════════════════════════════════════════════
 #  SCRAPER VINTED
-#  catalog_ids=2640 = kategoria Telefony na Vinted PL
 # ═══════════════════════════════════════════════════════════════
 def scrape_vinted(query):
     results = []
@@ -204,10 +195,11 @@ def scrape_vinted(query):
         time.sleep(2)
         r = session.get(url, headers=headers, timeout=15)
         if r.status_code != 200 or not r.text.strip():
-            print(f"[Vinted] Brak odpowiedzi dla '{query}' (status {r.status_code})", flush=True)
+            print(f"[Vinted] Brak odpowiedzi '{query}' status={r.status_code}", flush=True)
             return results
         data = r.json()
-        found = 0
+        raw_count = len(data.get("items", []))
+        print(f"[Vinted] '{query}': raw={raw_count}", flush=True)
         for item in data.get("items", []):
             try:
                 price = float(item.get("price", {}).get("amount", 9999))
@@ -220,19 +212,16 @@ def scrape_vinted(query):
                 description = item.get("description", "").lower()
                 link        = f"https://www.vinted.pl/items/{item_id}"
                 image       = item.get("photo", {}).get("url", "")
-                # Próbuj wyciągnąć GB z opisu Vinted (pole capacity lub description)
-                capacity    = item.get("extra_attributes", {})
-                desc_full   = title + " " + description + " " + str(capacity)
+                desc_full   = (title + " " + description).lower()
                 results.append({
                     "id": f"vinted_{item_id}", "platform": "Vinted",
                     "title": title, "price": price, "price_raw": f"{price:.0f} zl",
                     "link": link, "image": image,
-                    "has_shipping": True, "description": desc_full.lower(),
+                    "has_shipping": True, "description": desc_full,
                 })
-                found += 1
             except Exception:
                 continue
-        print(f"[Vinted] '{query}': znaleziono {found} telefonow", flush=True)
+        print(f"[Vinted] '{query}': telefonow={len(results)}", flush=True)
     except Exception as e:
         print(f"[Vinted] Blad przy '{query}': {e}", flush=True)
     return results
@@ -246,15 +235,12 @@ def parse_price(text):
 
 def extract_storage_gb(text):
     t = text.lower()
-    # 1TB / 2TB
     tb = re.search(r'(\d+)\s*tb', t)
     if tb:
         return int(tb.group(1)) * 1024
-    # 128gb / 256 gb / 512GB
     gb = re.search(r'\b(64|128|256|512)\s*gb\b', t)
     if gb:
         return int(gb.group(1))
-    # samo 128 / 256 / 512 bez jednostki (typowe na Vinted)
     standalone = re.search(r'\b(128|256|512)\b', t)
     if standalone:
         return int(standalone.group(1))
@@ -274,7 +260,6 @@ def get_ref_price(title, description=""):
     detected_gb = extract_storage_gb(haystack)
     if detected_gb and detected_gb in variants:
         return variants[detected_gb], detected_gb, best_key
-    # fallback – najnizsza dostepna wersja
     fallback_gb = min(variants.keys())
     return variants[fallback_gb], detected_gb, best_key
 
@@ -293,7 +278,7 @@ def is_damaged(item):
     return any(kw in haystack for kw in DAMAGE_KEYWORDS)
 
 # ═══════════════════════════════════════════════════════════════
-#  WYSYLKA NA DISCORD (z opoznieniem anti-429)
+#  WYSYLKA NA DISCORD
 # ═══════════════════════════════════════════════════════════════
 def send_discord(item, ref_price, storage_gb, model_key):
     pct     = discount_pct(item["price"], ref_price) if ref_price else None
@@ -332,12 +317,12 @@ def send_discord(item, ref_price, storage_gb, model_key):
         "color":       color,
         "description": "\n".join(desc_parts),
         "fields": [
-            {"name": "Cena ogloszenia",         "value": item["price_raw"],                                "inline": True},
-            {"name": "Cena referencyjna",        "value": ref_text,                                        "inline": True},
-            {"name": "Platforma",                "value": item["platform"],                                "inline": True},
-            {"name": "Wykryty model",            "value": model_key.title() if model_key else "nieznany",  "inline": True},
-            {"name": "Wykryta pamiec",           "value": gb_label(storage_gb),                            "inline": True},
-            {"name": "Wysylka OLX",              "value": shipping_text,                                   "inline": False},
+            {"name": "Cena ogloszenia",   "value": item["price_raw"],                               "inline": True},
+            {"name": "Cena referencyjna", "value": ref_text,                                         "inline": True},
+            {"name": "Platforma",         "value": item["platform"],                                 "inline": True},
+            {"name": "Wykryty model",     "value": model_key.title() if model_key else "nieznany",   "inline": True},
+            {"name": "Wykryta pamiec",    "value": gb_label(storage_gb),                             "inline": True},
+            {"name": "Wysylka OLX",       "value": shipping_text,                                    "inline": False},
         ],
         "footer": {"text": f"PhoneDealBot  {datetime.now().strftime('%H:%M  %d.%m.%Y')}"},
     }
@@ -349,9 +334,9 @@ def send_discord(item, ref_price, storage_gb, model_key):
         try:
             r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
             if r.status_code == 429:
-                retry_after = r.json().get("retry_after", 2)
+                retry_after = float(r.json().get("retry_after", 2))
                 print(f"[Discord] Rate limit, czekam {retry_after}s...", flush=True)
-                time.sleep(float(retry_after) + 0.5)
+                time.sleep(retry_after + 0.5)
                 continue
             if r.status_code not in (200, 204):
                 print(f"[Discord] Blad: {r.status_code}", flush=True)
@@ -359,10 +344,10 @@ def send_discord(item, ref_price, storage_gb, model_key):
         except Exception as e:
             print(f"[Discord] Wyjatek: {e}", flush=True)
             break
-    time.sleep(1.5)  # minimalny odstep miedzy wiadomosciami
+    time.sleep(1.5)
 
 # ═══════════════════════════════════════════════════════════════
-#  WSPOLNA LOGIKA PRZETWARZANIA OFERT
+#  WSPOLNA LOGIKA PRZETWARZANIA
 # ═══════════════════════════════════════════════════════════════
 def process_items(items, seen, send=True):
     deal_count = 0
@@ -384,9 +369,6 @@ def process_items(items, seen, send=True):
             skip_count += 1
     return deal_count, skip_count
 
-# ═══════════════════════════════════════════════════════════════
-#  ZBIERANIE WSZYSTKICH OFERT
-# ═══════════════════════════════════════════════════════════════
 def fetch_all():
     all_items = []
     for query in SEARCH_QUERIES:
@@ -401,7 +383,7 @@ def fetch_all():
 # ═══════════════════════════════════════════════════════════════
 def main():
     print("PhoneDealBot uruchomiony!", flush=True)
-    print(f"Co {CHECK_INTERVAL // 60} min | Max: {MAX_PRICE} zl | Prog: -{DISCOUNT_THRESHOLD}%", flush=True)
+    print(f"Co {CHECK_INTERVAL // 60} min | Max: {MAX_PRICE} zl | Prog: {DISCOUNT_THRESHOLD}%", flush=True)
 
     seen      = load_seen()
     first_run = len(seen) == 0
