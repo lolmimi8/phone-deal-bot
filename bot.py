@@ -63,12 +63,12 @@ SEARCH_QUERIES = [
     "galaxy s23", "galaxy s24", "galaxy s25",
 ]
 
-# Słowa które na pewno oznaczają akcesorium a nie telefon
 ACCESSORY_KEYWORDS = [
-    "etui", "case", "pokrowiec", "szklo", "szkło", "folia",
+    "etui", " case", "pokrowiec", "szklo", "szkło", "folia",
     "uchwyt", "ladowarka", "ładowarka", "kabel", "sluchawki",
     "słuchawki", "powerbank", "adapter", "atrapa", "naklejka",
     "tempered glass", "screen protector", "hoops", "huse", "husă",
+    "torbica", "maska", "kryt", "stojak", "plecki",
 ]
 
 DAMAGE_KEYWORDS = [
@@ -94,18 +94,18 @@ def save_seen(seen):
         json.dump(list(seen), f)
 
 # ═══════════════════════════════════════════════════════════════
-#  FILTR – czy to telefon a nie akcesorium
-#  Sprawdza tylko czy tytul NIE zawiera slow akcesoriow
-#  oraz czy zawiera nazwę modelu z naszej tabeli
+#  FILTR – odrzuca akcesoria, przepuszcza telefony
+#  Działa na tytule LOWERCASE
 # ═══════════════════════════════════════════════════════════════
-def is_phone(title):
-    t = title.lower()
+def is_phone(title_lower):
+    # odrzuc akcesoria
     for kw in ACCESSORY_KEYWORDS:
-        if kw in t:
+        if kw in title_lower:
             return False
-    # musi zawierac chociaz jeden klucz z tabeli cen
+    # musi zawierac przynajmniej jeden klucz modelu
+    # klucze sa juz lowercase wiec porownanie bezposrednie
     for key in MY_PRICES:
-        if key in t:
+        if key in title_lower:
             return True
     return False
 
@@ -140,14 +140,15 @@ def scrape_olx(query):
                 img_el   = card.select_one("img")
                 if not (title_el and price_el and link_el):
                     continue
-                title     = title_el.text.strip()
-                price_raw = price_el.text.strip()
-                price     = parse_price(price_raw)
-                link      = link_el.get("href", "")
+                title      = title_el.text.strip()
+                title_low  = title.lower()  # LOWERCASE do porownania
+                price_raw  = price_el.text.strip()
+                price      = parse_price(price_raw)
+                link       = link_el.get("href", "")
                 if not link.startswith("http"):
                     link = "https://www.olx.pl" + link
-                image     = img_el.get("src", "") if img_el else ""
-                card_text = card.get_text(" ", strip=True).lower()
+                image      = img_el.get("src", "") if img_el else ""
+                card_text  = card.get_text(" ", strip=True).lower()
                 has_shipping = (
                     "wysylka olx" in card_text
                     or "dostawa olx" in card_text
@@ -155,7 +156,7 @@ def scrape_olx(query):
                     or bool(card.select_one("[data-testid='delivery-badge']"))
                     or bool(card.select_one("[data-cy='olx-delivery']"))
                 )
-                if price and price <= MAX_PRICE and is_phone(title):
+                if price and price <= MAX_PRICE and is_phone(title_low):
                     results.append({
                         "id": link, "platform": "OLX",
                         "title": title, "price": price, "price_raw": price_raw,
@@ -171,13 +172,15 @@ def scrape_olx(query):
 
 # ═══════════════════════════════════════════════════════════════
 #  SCRAPER VINTED
+#  Próbujemy kilka catalog_ids dla telefonów
 # ═══════════════════════════════════════════════════════════════
 def scrape_vinted(query):
     results = []
+    # Próbujemy bez catalog_ids (wszystkie kategorie) żeby nie blokować wyników
     url = (
         f"https://www.vinted.pl/api/v2/catalog/items"
         f"?search_text={requests.utils.quote(query)}"
-        f"&price_to={MAX_PRICE}&catalog_ids=2640&per_page=30&order=newest_first"
+        f"&price_to={MAX_PRICE}&per_page=30&order=newest_first"
     )
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -205,14 +208,15 @@ def scrape_vinted(query):
                 price = float(item.get("price", {}).get("amount", 9999))
                 if price > MAX_PRICE:
                     continue
-                title       = item.get("title", "")
-                if not is_phone(title):
+                title      = item.get("title", "")
+                title_low  = title.lower()
+                if not is_phone(title_low):
                     continue
-                item_id     = str(item.get("id"))
+                item_id    = str(item.get("id"))
                 description = item.get("description", "").lower()
                 link        = f"https://www.vinted.pl/items/{item_id}"
                 image       = item.get("photo", {}).get("url", "")
-                desc_full   = (title + " " + description).lower()
+                desc_full   = (title_low + " " + description)
                 results.append({
                     "id": f"vinted_{item_id}", "platform": "Vinted",
                     "title": title, "price": price, "price_raw": f"{price:.0f} zl",
