@@ -12,7 +12,7 @@ os.environ["PYTHONUNBUFFERED"] = "1"
 sys.stdout.reconfigure(line_buffering=True)
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
-CHECK_INTERVAL     = 120
+CHECK_INTERVAL     = 60
 MIN_PRICE          = 100
 MAX_PRICE          = 2000
 DISCOUNT_THRESHOLD = 0
