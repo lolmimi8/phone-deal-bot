@@ -62,43 +62,57 @@ QUERIES = [
     "galaxy s23", "galaxy s24", "galaxy s25",
 ]
 
-# ── Jeśli tytuł zawiera KTÓREKOLWIEK z tych słów → odrzuć ────
-ACCESSORY_KEYWORDS = [
-    # Etui i obudowy
-    "etui", "obudow", "pokrowiec", "futeralik", "kabura",
-    "plecki", "back cover", "bumper",
-    # Case
-    "case", "casing",
-    # Szkło i folie
-    "szklo", "szkło", "folia", "folie", "tempered", "hartowane",
-    "screen protector", "ochronn", "ochraniacz", "protector",
-    "panzer", "spigen", "ringke", "nillkin", "baseus",
-    # Uchwyty i statywy
-    "uchwyt", "stojak", "stand", "holder", "mount",
-    # Ładowarki i kable
-    "ladowark", "ładowark", "kabel", "cable", "przewod", "przewód",
-    "zasiacz", "zasilacz", "charger", "wireless charg",
-    "powerbank", "power bank",
-    # Słuchawki
-    "sluchawk", "słuchawk", "earphone", "earbud", "airpod",
-    "headphone", "headset",
-    # Adaptery i huby
-    "adapter", "przejscio", "przejściów", "hub",
-    # Inne akcesoria
-    "naklejk", "sticker", "wrap", "skin",
-    "atrapa", "dummy", "model telefonu",
-    "smartwatch", "zegarek", "watch", "opaska",
-    "bateria zewn", "battery pack",
-    "obiektyw", "lens",
-    "gimbal", "statyw",
-    "selfie", "monopod",
-    # Wielopakiety i zestawy akcesoriów
-    "zestaw akcesori", "komplet akcesori",
-    # Zagraniczne słowa (Vinted ma oferty z całej Europy)
-    "huse", "husă", "husa", "kryt", "torbica", "maska",
-    "coque", "capinha", "fundas", "tok", "custodia",
-    "skal", "hoesje", "puzdro", "obal",
+# Wzorce modeli – regex żeby łapać "iphone13", "iphone 13", "iPhone13" itp.
+MODEL_PATTERNS = [
+    r'iphone\s*1[3456]',
+    r'iphone\s*1[34]\s*pro',
+    r'iphone\s*1[34]\s*pro\s*max',
+    r'iphone\s*1[34]\s*plus',
+    r'iphone\s*15\s*pro',
+    r'iphone\s*15\s*pro\s*max',
+    r'iphone\s*15\s*plus',
+    r'iphone\s*16\s*pro',
+    r'iphone\s*16\s*pro\s*max',
+    r'iphone\s*16\s*plus',
+    r'galaxy\s*s2[345]',
+    r'galaxy\s*s2[345]\s*\+',
+    r'galaxy\s*s2[345]\s*plus',
+    r'galaxy\s*s2[345]\s*ultra',
+    r'samsung\s*s2[345]',
+    r'samsung\s*s2[345]\s*\+',
+    r'samsung\s*s2[345]\s*plus',
+    r'samsung\s*s2[345]\s*ultra',
+    r'\bs2[345]\b',           # samo "s23", "s24", "s25"
+    r'\bs2[345]\s*ultra\b',
+    r'\bs2[345]\s*\+',
 ]
+MODEL_REGEX = [re.compile(p, re.IGNORECASE) for p in MODEL_PATTERNS]
+
+# Słowa które JEDNOZNACZNIE oznaczają akcesorium
+# WAŻNE: używamy \b (granice słów) gdzie możliwe żeby nie blokować przypadkowo
+ACCESSORY_PATTERNS = [
+    r'\betui\b', r'\bobudow', r'\bpokrowiec\b', r'\bfuterał\b', r'\bbumper\b',
+    r'\bback cover\b', r'\bplecki\b',
+    r'\bszkło\b', r'\bszklo\b', r'\bfolia\b', r'\bfolie\b',
+    r'\btempered glass\b', r'\bhartowane\b', r'\bscreen protector\b',
+    r'\bpanzer\b', r'\bspigen\b', r'\bringke\b', r'\bnillkin\b',
+    r'\buchwyt\b', r'\bstojak\b', r'\bholder\b', r'\bmount\b',
+    r'\bladowark', r'\bładowark', r'\bkabel\b', r'\bcable\b',
+    r'\bcharger\b', r'\bwireless charg', r'\bpowerbank\b', r'\bpower bank\b',
+    r'\bsluchawk', r'\bsłuchawk', r'\bearphone', r'\bearbud',
+    r'\bairpod', r'\bheadphone', r'\bheadset',
+    r'\badapter\b', r'\bhub\b',
+    r'\bnaklejk', r'\bsticker\b', r'\bskin\b',
+    r'\batrapa\b', r'\bdummy\b',
+    r'\bsmartwatch\b', r'\bzegarek\b', r'\bopaska\b',
+    r'\bobjectyw\b', r'\blens\b',
+    # zagraniczne
+    r'\bhuse\b', r'\bhusă\b', r'\bhusa\b', r'\bkryt\b',
+    r'\btorbica\b', r'\bcoque\b', r'\bcapinha\b',
+    r'\bfundas\b', r'\bcustodia\b', r'\bhoesje\b',
+    r'\bpuzdro\b', r'\bobal\b', r'\bskal\b',
+]
+ACCESSORY_REGEX = [re.compile(p, re.IGNORECASE) for p in ACCESSORY_PATTERNS]
 
 DAMAGE_KEYWORDS = [
     "uszkodzon", "rozbity", "peknieto", "zbity", "nie dziala",
@@ -118,19 +132,20 @@ def save_seen(seen):
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen), f)
 
-def is_accessory(t):
-    return any(kw in t for kw in ACCESSORY_KEYWORDS)
+def is_accessory(title):
+    t = title.lower()
+    return any(r.search(t) for r in ACCESSORY_REGEX)
+
+def contains_model(title):
+    t = title.lower()
+    return any(r.search(t) for r in MODEL_REGEX)
 
 def is_damaged(t, d=""):
-    return any(kw in t + " " + d for kw in DAMAGE_KEYWORDS)
-
-def contains_model(t):
-    """Tytuł musi zawierać przynajmniej jeden klucz modelu."""
-    return any(k in t for k in MY_PRICES)
+    haystack = t.lower() + " " + d.lower()
+    return any(kw in haystack for kw in DAMAGE_KEYWORDS)
 
 # ═══════════════════════════════════════════════════════════════
-#  OLX – oficjalne API JSON, bez HTML scraping
-#  category_id=770 = Smartfony i Telefony w OLX PL
+#  OLX API
 # ═══════════════════════════════════════════════════════════════
 def scrape_olx(query):
     results = []
@@ -157,8 +172,7 @@ def scrape_olx(query):
                 break
             data = r.json()
             offers = data.get("data", [])
-            print(f"[OLX] '{query}' offset={offset}: {len(offers)} ofert z API", flush=True)
-
+            print(f"[OLX] '{query}' offset={offset}: {len(offers)} ofert", flush=True)
             if not offers:
                 break
 
@@ -167,14 +181,13 @@ def scrape_olx(query):
                     title = offer.get("title", "").strip()
                     if not title or len(title) < 5:
                         continue
-                    title_low = title.lower()
 
                     # Odrzuc akcesoria
-                    if is_accessory(title_low):
+                    if is_accessory(title):
                         continue
 
                     # Musi zawierac model
-                    if not contains_model(title_low):
+                    if not contains_model(title):
                         continue
 
                     # Cena
@@ -187,25 +200,20 @@ def scrape_olx(query):
                     if not (MIN_PRICE <= price <= MAX_PRICE):
                         continue
 
-                    # Link
                     link = offer.get("url", "")
                     if not link:
                         slug = offer.get("slug", str(offer.get("id", "")))
                         link = f"https://www.olx.pl/d/oferta/{slug}.html"
 
-                    # Zdjecie
                     photos = offer.get("photos", [])
                     image  = ""
                     if photos:
-                        img_link = photos[0].get("link", "")
-                        image = img_link.replace("{width}", "400").replace("{height}", "400")
+                        img = photos[0].get("link", "")
+                        image = img.replace("{width}", "400").replace("{height}", "400")
 
-                    # Wysylka OLX
                     delivery     = offer.get("delivery", {})
                     has_shipping = bool(delivery.get("active", False))
-
-                    # Opis
-                    description = offer.get("description", "").lower()
+                    description  = offer.get("description", "").lower()
 
                     results.append({
                         "id": str(offer.get("id", link)),
@@ -216,12 +224,11 @@ def scrape_olx(query):
                         "link": link,
                         "image": image,
                         "has_shipping": has_shipping,
-                        "description": title_low + " " + description,
+                        "description": title.lower() + " " + description,
                     })
                 except Exception:
                     continue
 
-            # Jesli mniej niz 40 ofert – nie ma kolejnej strony
             if len(offers) < 40:
                 break
             time.sleep(0.5)
@@ -263,8 +270,7 @@ def scrape_vinted(query):
             print(f"[Vinted] Brak odpowiedzi '{query}' status={r.status_code}", flush=True)
             return results
         data = r.json()
-        raw = len(data.get("items", []))
-        print(f"[Vinted] '{query}': raw={raw}", flush=True)
+        print(f"[Vinted] '{query}': raw={len(data.get('items', []))}", flush=True)
         for item in data.get("items", []):
             try:
                 price = float(item.get("price", {}).get("amount", 9999))
@@ -273,16 +279,10 @@ def scrape_vinted(query):
                 title = item.get("title", "").strip()
                 if not title or len(title) < 5:
                     continue
-                title_low = title.lower()
-
-                # Odrzuc akcesoria
-                if is_accessory(title_low):
+                if is_accessory(title):
                     continue
-
-                # Musi zawierac model
-                if not contains_model(title_low):
+                if not contains_model(title):
                     continue
-
                 item_id     = str(item.get("id"))
                 description = item.get("description", "").lower()
                 link        = f"https://www.vinted.pl/items/{item_id}"
@@ -296,7 +296,7 @@ def scrape_vinted(query):
                     "link": link,
                     "image": image,
                     "has_shipping": True,
-                    "description": title_low + " " + description,
+                    "description": title.lower() + " " + description,
                 })
             except Exception:
                 continue
@@ -353,12 +353,12 @@ def gb_label(gb):
 # ═══════════════════════════════════════════════════════════════
 def send_discord(item, ref_price, storage_gb, model_key):
     pct     = discount_pct(item["price"], ref_price) if ref_price else None
-    damaged = is_damaged(item["title"].lower(), item.get("description", ""))
+    damaged = is_damaged(item["title"], item.get("description", ""))
 
-    if damaged:                 color = 0x808080
-    elif pct and pct >= 30:    color = 0xFF4500
-    elif pct and pct >= 20:    color = 0xFFD700
-    else:                      color = 0x00CC66
+    if damaged:              color = 0x808080
+    elif pct and pct >= 30: color = 0xFF4500
+    elif pct and pct >= 20: color = 0xFFD700
+    else:                   color = 0x00CC66
 
     shipping_text = (
         ("TAK - Wysylka OLX" if item.get("has_shipping") else "NIE - tylko odbior osobisty")
@@ -458,7 +458,7 @@ def start_flask():
 
 def main():
     print("PhoneDealBot uruchomiony!", flush=True)
-    print(f"Co {CHECK_INTERVAL // 60} min | {MIN_PRICE}-{MAX_PRICE} zl | Prog: {DISCOUNT_THRESHOLD}%", flush=True)
+    print(f"Co {CHECK_INTERVAL}s | {MIN_PRICE}-{MAX_PRICE} zl | Prog: {DISCOUNT_THRESHOLD}%", flush=True)
     seen      = load_seen()
     first_run = len(seen) == 0
     if first_run:
