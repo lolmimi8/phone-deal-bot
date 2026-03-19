@@ -6,7 +6,6 @@ import json
 import re
 import threading
 from datetime import datetime
-from bs4 import BeautifulSoup
 from flask import Flask
 
 os.environ["PYTHONUNBUFFERED"] = "1"
@@ -57,13 +56,7 @@ MY_PRICES = {
     "galaxy s25 ultra":   {},
 }
 
-OLX_QUERIES = [
-    "iphone+13", "iphone+14", "iphone+15", "iphone+16",
-    "samsung+s23", "samsung+s24", "samsung+s25",
-    "galaxy+s23", "galaxy+s24", "galaxy+s25",
-]
-
-VINTED_QUERIES = [
+QUERIES = [
     "iphone 13", "iphone 14", "iphone 15", "iphone 16",
     "samsung s23", "samsung s24", "samsung s25",
     "galaxy s23", "galaxy s24", "galaxy s25",
@@ -78,7 +71,7 @@ ACCESSORY_KEYWORDS = [
     "hoops", "huse", "husă", "maska", "kryt",
     "torbica", "stojak", "plecki", "back cover",
     "silikonow", "silikonowe", "hartowane", "smartwatch",
-    "zegarek", "watch", "wireless charger",
+    "zegarek", "wireless charger",
 ]
 
 DAMAGE_KEYWORDS = [
@@ -105,115 +98,94 @@ def is_accessory(t):
 def is_damaged(t, d=""):
     return any(kw in t + " " + d for kw in DAMAGE_KEYWORDS)
 
-def get_title_from_card(card):
-    """Próbuje wyciągnąć tytuł z karty OLX kilkoma metodami."""
-    # Metoda 1: h6
-    el = card.select_one("h6")
-    if el and el.text.strip():
-        return el.text.strip()
-    # Metoda 2: data-cy title
-    el = card.select_one("[data-cy='ad-card-title']")
-    if el and el.text.strip():
-        return el.text.strip()
-    # Metoda 3: link do ogłoszenia (zawiera /d/ w URL)
-    for a in card.find_all("a", href=True):
-        if "/d/" in a.get("href", ""):
-            text = re.sub(r"\s+", " ", a.get_text()).strip()
-            if len(text) > 5:
-                return text
-    # Metoda 4: dowolny <a> z sensownym tekstem
-    for a in card.find_all("a", href=True):
-        text = re.sub(r"\s+", " ", a.get_text()).strip()
-        if len(text) > 10:
-            return text
-    return ""
-
+# ═══════════════════════════════════════════════════════════════
+#  OLX API – oficjalne JSON API, niezawodne
+# ═══════════════════════════════════════════════════════════════
 def scrape_olx(query):
     results = []
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "pl,en;q=0.9",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
     }
-    for page in range(1, 3):
+    for offset in [0, 40]:
         url = (
-            f"https://www.olx.pl/elektronika/telefony/"
-            f"smartfony-telefony-komorkowe/"
-            f"q-{query}/?search%5Border%5D=created_at:desc&page={page}"
+            f"https://www.olx.pl/api/v1/offers/"
+            f"?offset={offset}&limit=40"
+            f"&category_id=84"
+            f"&query={requests.utils.quote(query)}"
+            f"&price_from={MIN_PRICE}&price_to={MAX_PRICE}"
+            f"&currency=PLN"
+            f"&sort_by=created_at:desc"
         )
         try:
             r = requests.get(url, headers=headers, timeout=10)
-            soup = BeautifulSoup(r.text, "html.parser")
-            cards = (
-                soup.select('div[data-cy="l-card"]') or
-                soup.select('div[data-testid="l-card"]')
-            )
-            print(f"[OLX] '{query}' str.{page}: {len(cards)} kart", flush=True)
-            for card in cards:
+            if r.status_code != 200:
+                print(f"[OLX API] status {r.status_code} dla '{query}'", flush=True)
+                continue
+            data = r.json()
+            offers = data.get("data", [])
+            print(f"[OLX API] '{query}' offset={offset}: {len(offers)} ofert", flush=True)
+            for offer in offers:
                 try:
-                    title = get_title_from_card(card)
+                    title = offer.get("title", "").strip()
                     if not title or len(title) < 5:
                         continue
                     title_low = title.lower()
                     if is_accessory(title_low):
                         continue
 
-                    # Link
-                    link_el = card.select_one("a[href]")
-                    if not link_el:
-                        continue
-                    href = link_el["href"]
-                    if not href.startswith("http"):
-                        href = "https://www.olx.pl" + href
-                    # Weź tylko link do ogłoszenia (z /d/)
-                    for a in card.find_all("a", href=True):
-                        if "/d/" in a["href"]:
-                            href = a["href"]
-                            if not href.startswith("http"):
-                                href = "https://www.olx.pl" + href
-                            break
-
                     # Cena
-                    price_el = card.select_one("p[data-testid='ad-price']")
-                    if price_el:
-                        price_text = price_el.text
+                    price_info = offer.get("price", {})
+                    if not price_info or price_info.get("negotiable"):
+                        # do negocjacji – pomijamy bo nie znamy ceny
+                        pass
+                    price_val = price_info.get("value", {})
+                    if isinstance(price_val, dict):
+                        price = float(price_val.get("value", 0))
                     else:
-                        price_text = card.get_text()
-                    price_match = re.search(r"([\d][\d\s\xa0]{1,8})\s?zł", price_text)
-                    if not price_match:
-                        continue
-                    price = float(re.sub(r"[^\d]", "", price_match.group(1)))
+                        price = float(price_val or 0)
                     if not (MIN_PRICE <= price <= MAX_PRICE):
                         continue
 
-                    card_low = card.get_text(" ").lower()
-                    has_shipping = (
-                        "wysyłka olx" in card_low or
-                        "dostawa olx" in card_low or
-                        bool(card.select_one("[data-testid='delivery-badge']"))
-                    )
-                    img_el = card.select_one("img")
-                    image  = img_el.get("src", "") if img_el else ""
+                    link = offer.get("url", "")
+                    if not link:
+                        offer_id = offer.get("id", "")
+                        slug     = offer.get("slug", str(offer_id))
+                        link     = f"https://www.olx.pl/d/oferta/{slug}.html"
+
+                    # Zdjęcie
+                    photos = offer.get("photos", [])
+                    image  = photos[0].get("link", "").replace("{width}", "400").replace("{height}", "400") if photos else ""
+
+                    # Wysyłka OLX
+                    delivery = offer.get("delivery", {})
+                    has_shipping = bool(delivery.get("active", False))
+
+                    # Opis do wykrywania GB i uszkodzeń
+                    description = offer.get("description", "").lower()
 
                     results.append({
-                        "id": href, "platform": "OLX",
-                        "title": title, "price": price,
+                        "id": str(offer.get("id", link)),
+                        "platform": "OLX",
+                        "title": title,
+                        "price": price,
                         "price_raw": f"{price:.0f} zl",
-                        "link": href, "image": image,
+                        "link": link,
+                        "image": image,
                         "has_shipping": has_shipping,
-                        "description": card_low,
+                        "description": title_low + " " + description,
                     })
-                except Exception:
+                except Exception as e:
                     continue
             time.sleep(0.5)
         except Exception as e:
-            print(f"[OLX] Blad '{query}' str.{page}: {e}", flush=True)
-    print(f"[OLX] '{query}': telefonow={len(results)}", flush=True)
+            print(f"[OLX API] Blad '{query}': {e}", flush=True)
+    print(f"[OLX API] '{query}': telefonow={len(results)}", flush=True)
     return results
 
+# ═══════════════════════════════════════════════════════════════
+#  VINTED
+# ═══════════════════════════════════════════════════════════════
 def scrape_vinted(query):
     results = []
     url = (
@@ -260,10 +232,13 @@ def scrape_vinted(query):
                 link        = f"https://www.vinted.pl/items/{item_id}"
                 image       = item.get("photo", {}).get("url", "")
                 results.append({
-                    "id": f"vinted_{item_id}", "platform": "Vinted",
-                    "title": title, "price": price,
+                    "id": f"vinted_{item_id}",
+                    "platform": "Vinted",
+                    "title": title,
+                    "price": price,
                     "price_raw": f"{price:.0f} zl",
-                    "link": link, "image": image,
+                    "link": link,
+                    "image": image,
                     "has_shipping": True,
                     "description": title_low + " " + description,
                 })
@@ -274,6 +249,9 @@ def scrape_vinted(query):
         print(f"[Vinted] Blad '{query}': {e}", flush=True)
     return results
 
+# ═══════════════════════════════════════════════════════════════
+#  HELPERY
+# ═══════════════════════════════════════════════════════════════
 def extract_storage_gb(text):
     t = text.lower()
     tb = re.search(r'(\d+)\s*tb', t)
@@ -314,17 +292,17 @@ def gb_label(gb):
         return f"{gb // 1024}TB"
     return f"{gb}GB"
 
+# ═══════════════════════════════════════════════════════════════
+#  DISCORD
+# ═══════════════════════════════════════════════════════════════
 def send_discord(item, ref_price, storage_gb, model_key):
     pct     = discount_pct(item["price"], ref_price) if ref_price else None
     damaged = is_damaged(item["title"].lower(), item.get("description", ""))
-    if damaged:
-        color = 0x808080
-    elif pct and pct >= 30:
-        color = 0xFF4500
-    elif pct and pct >= 20:
-        color = 0xFFD700
-    else:
-        color = 0x00CC66
+
+    if damaged:        color = 0x808080
+    elif pct and pct >= 30: color = 0xFF4500
+    elif pct and pct >= 20: color = 0xFFD700
+    else:              color = 0x00CC66
 
     shipping_text = (
         ("TAK - Wysylka OLX" if item.get("has_shipping") else "NIE - tylko odbior osobisty")
@@ -339,7 +317,7 @@ def send_discord(item, ref_price, storage_gb, model_key):
         desc_parts.append(f"OKAZJA {discount_text}")
     desc_parts.append(damage_text)
 
-    title = (item["title"].strip() or "Brak tytulu")[:250]
+    title = item["title"].strip()[:250] or "Ogloszenie"
 
     embed = {
         "title":       title,
@@ -347,12 +325,12 @@ def send_discord(item, ref_price, storage_gb, model_key):
         "color":       color,
         "description": "\n".join(desc_parts),
         "fields": [
-            {"name": "Cena",         "value": item["price_raw"],                               "inline": True},
-            {"name": "Cena ref.",    "value": ref_text,                                         "inline": True},
-            {"name": "Platforma",    "value": item["platform"],                                 "inline": True},
-            {"name": "Model",        "value": model_key.title() if model_key else "nieznany",   "inline": True},
-            {"name": "Pamiec",       "value": gb_label(storage_gb),                             "inline": True},
-            {"name": "Wysylka OLX",  "value": shipping_text,                                    "inline": False},
+            {"name": "Cena",        "value": item["price_raw"],                               "inline": True},
+            {"name": "Cena ref.",   "value": ref_text,                                         "inline": True},
+            {"name": "Platforma",   "value": item["platform"],                                 "inline": True},
+            {"name": "Model",       "value": model_key.title() if model_key else "nieznany",   "inline": True},
+            {"name": "Pamiec",      "value": gb_label(storage_gb),                             "inline": True},
+            {"name": "Wysylka OLX", "value": shipping_text,                                    "inline": False},
         ],
         "footer": {"text": f"PhoneDealBot  {datetime.now().strftime('%H:%M  %d.%m.%Y')}"},
     }
@@ -376,6 +354,9 @@ def send_discord(item, ref_price, storage_gb, model_key):
             break
     time.sleep(1.5)
 
+# ═══════════════════════════════════════════════════════════════
+#  PRZETWARZANIE
+# ═══════════════════════════════════════════════════════════════
 def process_items(items, seen, send=True):
     deal_count = 0
     skip_count = 0
@@ -398,14 +379,16 @@ def process_items(items, seen, send=True):
 
 def fetch_all():
     all_items = []
-    for query in OLX_QUERIES:
+    for query in QUERIES:
         all_items.extend(scrape_olx(query))
         time.sleep(1)
-    for query in VINTED_QUERIES:
         all_items.extend(scrape_vinted(query))
         time.sleep(1)
     return all_items
 
+# ═══════════════════════════════════════════════════════════════
+#  FLASK KEEP-ALIVE
+# ═══════════════════════════════════════════════════════════════
 app = Flask(__name__)
 
 @app.route("/")
@@ -417,11 +400,16 @@ def start_flask():
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
     app.run(host="0.0.0.0", port=8080)
 
+# ═══════════════════════════════════════════════════════════════
+#  START
+# ═══════════════════════════════════════════════════════════════
 def main():
     print("PhoneDealBot uruchomiony!", flush=True)
     print(f"Co {CHECK_INTERVAL // 60} min | {MIN_PRICE}-{MAX_PRICE} zl | Prog: {DISCOUNT_THRESHOLD}%", flush=True)
+
     seen      = load_seen()
     first_run = len(seen) == 0
+
     if first_run:
         print("Pierwsze uruchomienie...", flush=True)
         items = fetch_all()
@@ -429,6 +417,7 @@ def main():
         save_seen(seen)
         print(f"Start: wyslano {deal_count}, pominieto {skip_count}.", flush=True)
         time.sleep(CHECK_INTERVAL)
+
     while True:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Sprawdzam...", flush=True)
         items = fetch_all()
