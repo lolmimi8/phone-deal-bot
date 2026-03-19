@@ -62,16 +62,42 @@ QUERIES = [
     "galaxy s23", "galaxy s24", "galaxy s25",
 ]
 
+# ── Jeśli tytuł zawiera KTÓREKOLWIEK z tych słów → odrzuć ────
 ACCESSORY_KEYWORDS = [
-    "etui", "case", "pokrowiec", "szklo", "szkło", "folia",
-    "uchwyt", "ladowarka", "ładowarka", "kabel", "cable",
-    "sluchawki", "słuchawki", "earphones", "airpods",
-    "powerbank", "adapter", "atrapa", "naklejka",
-    "tempered glass", "screen protector", "panzer", "spigen",
-    "hoops", "huse", "husă", "maska", "kryt",
-    "torbica", "stojak", "plecki", "back cover",
-    "silikonow", "silikonowe", "hartowane", "smartwatch",
-    "zegarek", "wireless charger",
+    # Etui i obudowy
+    "etui", "obudow", "pokrowiec", "futeralik", "kabura",
+    "plecki", "back cover", "bumper",
+    # Case
+    "case", "casing",
+    # Szkło i folie
+    "szklo", "szkło", "folia", "folie", "tempered", "hartowane",
+    "screen protector", "ochronn", "ochraniacz", "protector",
+    "panzer", "spigen", "ringke", "nillkin", "baseus",
+    # Uchwyty i statywy
+    "uchwyt", "stojak", "stand", "holder", "mount",
+    # Ładowarki i kable
+    "ladowark", "ładowark", "kabel", "cable", "przewod", "przewód",
+    "zasiacz", "zasilacz", "charger", "wireless charg",
+    "powerbank", "power bank",
+    # Słuchawki
+    "sluchawk", "słuchawk", "earphone", "earbud", "airpod",
+    "headphone", "headset",
+    # Adaptery i huby
+    "adapter", "przejscio", "przejściów", "hub",
+    # Inne akcesoria
+    "naklejk", "sticker", "wrap", "skin",
+    "atrapa", "dummy", "model telefonu",
+    "smartwatch", "zegarek", "watch", "opaska",
+    "bateria zewn", "battery pack",
+    "obiektyw", "lens",
+    "gimbal", "statyw",
+    "selfie", "monopod",
+    # Wielopakiety i zestawy akcesoriów
+    "zestaw akcesori", "komplet akcesori",
+    # Zagraniczne słowa (Vinted ma oferty z całej Europy)
+    "huse", "husă", "husa", "kryt", "torbica", "maska",
+    "coque", "capinha", "fundas", "tok", "custodia",
+    "skal", "hoesje", "puzdro", "obal",
 ]
 
 DAMAGE_KEYWORDS = [
@@ -98,21 +124,28 @@ def is_accessory(t):
 def is_damaged(t, d=""):
     return any(kw in t + " " + d for kw in DAMAGE_KEYWORDS)
 
+def contains_model(t):
+    """Tytuł musi zawierać przynajmniej jeden klucz modelu."""
+    return any(k in t for k in MY_PRICES)
+
 # ═══════════════════════════════════════════════════════════════
-#  OLX API – oficjalne JSON API, niezawodne
+#  OLX – oficjalne API JSON, bez HTML scraping
+#  category_id=770 = Smartfony i Telefony w OLX PL
 # ═══════════════════════════════════════════════════════════════
 def scrape_olx(query):
     results = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
+        "Accept-Language": "pl-PL,pl;q=0.9",
     }
-    for offset in [0, 40]:
+    for offset in [0, 40, 80]:
         url = (
             f"https://www.olx.pl/api/v1/offers/"
             f"?offset={offset}&limit=40"
-            f"&category_id=84"
+            f"&category_id=770"
             f"&query={requests.utils.quote(query)}"
+            f"&filter_refiners=spell_checker"
             f"&price_from={MIN_PRICE}&price_to={MAX_PRICE}"
             f"&currency=PLN"
             f"&sort_by=created_at:desc"
@@ -120,26 +153,33 @@ def scrape_olx(query):
         try:
             r = requests.get(url, headers=headers, timeout=10)
             if r.status_code != 200:
-                print(f"[OLX API] status {r.status_code} dla '{query}'", flush=True)
-                continue
+                print(f"[OLX] status {r.status_code} dla '{query}' offset={offset}", flush=True)
+                break
             data = r.json()
             offers = data.get("data", [])
-            print(f"[OLX API] '{query}' offset={offset}: {len(offers)} ofert", flush=True)
+            print(f"[OLX] '{query}' offset={offset}: {len(offers)} ofert z API", flush=True)
+
+            if not offers:
+                break
+
             for offer in offers:
                 try:
                     title = offer.get("title", "").strip()
                     if not title or len(title) < 5:
                         continue
                     title_low = title.lower()
+
+                    # Odrzuc akcesoria
                     if is_accessory(title_low):
                         continue
 
+                    # Musi zawierac model
+                    if not contains_model(title_low):
+                        continue
+
                     # Cena
-                    price_info = offer.get("price", {})
-                    if not price_info or price_info.get("negotiable"):
-                        # do negocjacji – pomijamy bo nie znamy ceny
-                        pass
-                    price_val = price_info.get("value", {})
+                    price_obj = offer.get("price", {})
+                    price_val = price_obj.get("value", {})
                     if isinstance(price_val, dict):
                         price = float(price_val.get("value", 0))
                     else:
@@ -147,21 +187,24 @@ def scrape_olx(query):
                     if not (MIN_PRICE <= price <= MAX_PRICE):
                         continue
 
+                    # Link
                     link = offer.get("url", "")
                     if not link:
-                        offer_id = offer.get("id", "")
-                        slug     = offer.get("slug", str(offer_id))
-                        link     = f"https://www.olx.pl/d/oferta/{slug}.html"
+                        slug = offer.get("slug", str(offer.get("id", "")))
+                        link = f"https://www.olx.pl/d/oferta/{slug}.html"
 
-                    # Zdjęcie
+                    # Zdjecie
                     photos = offer.get("photos", [])
-                    image  = photos[0].get("link", "").replace("{width}", "400").replace("{height}", "400") if photos else ""
+                    image  = ""
+                    if photos:
+                        img_link = photos[0].get("link", "")
+                        image = img_link.replace("{width}", "400").replace("{height}", "400")
 
-                    # Wysyłka OLX
-                    delivery = offer.get("delivery", {})
+                    # Wysylka OLX
+                    delivery     = offer.get("delivery", {})
                     has_shipping = bool(delivery.get("active", False))
 
-                    # Opis do wykrywania GB i uszkodzeń
+                    # Opis
                     description = offer.get("description", "").lower()
 
                     results.append({
@@ -175,12 +218,19 @@ def scrape_olx(query):
                         "has_shipping": has_shipping,
                         "description": title_low + " " + description,
                     })
-                except Exception as e:
+                except Exception:
                     continue
+
+            # Jesli mniej niz 40 ofert – nie ma kolejnej strony
+            if len(offers) < 40:
+                break
             time.sleep(0.5)
+
         except Exception as e:
-            print(f"[OLX API] Blad '{query}': {e}", flush=True)
-    print(f"[OLX API] '{query}': telefonow={len(results)}", flush=True)
+            print(f"[OLX] Blad '{query}' offset={offset}: {e}", flush=True)
+            break
+
+    print(f"[OLX] '{query}': telefonow={len(results)}", flush=True)
     return results
 
 # ═══════════════════════════════════════════════════════════════
@@ -213,7 +263,8 @@ def scrape_vinted(query):
             print(f"[Vinted] Brak odpowiedzi '{query}' status={r.status_code}", flush=True)
             return results
         data = r.json()
-        print(f"[Vinted] '{query}': raw={len(data.get('items', []))}", flush=True)
+        raw = len(data.get("items", []))
+        print(f"[Vinted] '{query}': raw={raw}", flush=True)
         for item in data.get("items", []):
             try:
                 price = float(item.get("price", {}).get("amount", 9999))
@@ -223,10 +274,15 @@ def scrape_vinted(query):
                 if not title or len(title) < 5:
                     continue
                 title_low = title.lower()
+
+                # Odrzuc akcesoria
                 if is_accessory(title_low):
                     continue
-                if not any(k in title_low for k in MY_PRICES):
+
+                # Musi zawierac model
+                if not contains_model(title_low):
                     continue
+
                 item_id     = str(item.get("id"))
                 description = item.get("description", "").lower()
                 link        = f"https://www.vinted.pl/items/{item_id}"
@@ -299,10 +355,10 @@ def send_discord(item, ref_price, storage_gb, model_key):
     pct     = discount_pct(item["price"], ref_price) if ref_price else None
     damaged = is_damaged(item["title"].lower(), item.get("description", ""))
 
-    if damaged:        color = 0x808080
-    elif pct and pct >= 30: color = 0xFF4500
-    elif pct and pct >= 20: color = 0xFFD700
-    else:              color = 0x00CC66
+    if damaged:                 color = 0x808080
+    elif pct and pct >= 30:    color = 0xFF4500
+    elif pct and pct >= 20:    color = 0xFFD700
+    else:                      color = 0x00CC66
 
     shipping_text = (
         ("TAK - Wysylka OLX" if item.get("has_shipping") else "NIE - tylko odbior osobisty")
@@ -387,7 +443,7 @@ def fetch_all():
     return all_items
 
 # ═══════════════════════════════════════════════════════════════
-#  FLASK KEEP-ALIVE
+#  FLASK + START
 # ═══════════════════════════════════════════════════════════════
 app = Flask(__name__)
 
@@ -400,16 +456,11 @@ def start_flask():
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
     app.run(host="0.0.0.0", port=8080)
 
-# ═══════════════════════════════════════════════════════════════
-#  START
-# ═══════════════════════════════════════════════════════════════
 def main():
     print("PhoneDealBot uruchomiony!", flush=True)
     print(f"Co {CHECK_INTERVAL // 60} min | {MIN_PRICE}-{MAX_PRICE} zl | Prog: {DISCOUNT_THRESHOLD}%", flush=True)
-
     seen      = load_seen()
     first_run = len(seen) == 0
-
     if first_run:
         print("Pierwsze uruchomienie...", flush=True)
         items = fetch_all()
@@ -417,7 +468,6 @@ def main():
         save_seen(seen)
         print(f"Start: wyslano {deal_count}, pominieto {skip_count}.", flush=True)
         time.sleep(CHECK_INTERVAL)
-
     while True:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Sprawdzam...", flush=True)
         items = fetch_all()
