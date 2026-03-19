@@ -1,4 +1,9 @@
-from bot import main
+import subprocess
+import sys
+import time
 
-if __name__ == "__main__":
-    main()
+while True:
+    print("Uruchamiam bota...", flush=True)
+    ret = subprocess.run([sys.executable, "bot.py"])
+    print(f"Bot zakonczyl sie (kod: {ret.returncode}). Restart za 5s...", flush=True)
+    time.sleep(5)
